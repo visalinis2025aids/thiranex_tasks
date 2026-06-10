@@ -1,0 +1,101 @@
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from src.cleaning import load_raw, drop_duplicates, impute_missing, feature_engineer
+
+OUTPUTS = 'outputs'
+os.makedirs(OUTPUTS, exist_ok=True)
+
+
+def ensure_clean():
+    # produce cleaned data using cleaning pipeline
+    df = load_raw('data/raw/sample_transactions.csv')
+    df = drop_duplicates(df)
+    df = impute_missing(df)
+    df = feature_engineer(df)
+    df.to_csv('data/processed/clean_transactions.csv', index=False)
+    return df
+
+
+def save_table(df, name):
+    path = os.path.join(OUTPUTS, f'{name}.csv')
+    df.to_csv(path, index=False)
+    return path
+
+
+def main():
+    df = ensure_clean()
+
+    # Basic summaries
+    desc = df.describe(include='all')
+    desc_path = os.path.join(OUTPUTS, 'describe.csv')
+    desc.to_csv(desc_path)
+
+    missing = df.isnull().sum().reset_index()
+    missing.columns = ['column', 'missing']
+    missing['pct'] = missing['missing'] / len(df) * 100
+    missing_path = save_table(missing, 'missing_summary')
+
+    # Top products by revenue
+    top_products = df.groupby('product_id')['total'].sum().reset_index().sort_values('total', ascending=False)
+    save_table(top_products.head(20), 'top_products')
+
+    # Customers by spend
+    top_customers = df.groupby('customer_id')['total'].sum().reset_index().sort_values('total', ascending=False)
+    save_table(top_customers.head(20), 'top_customers')
+
+    # Time series revenue plot
+    ts = df.set_index('order_date').resample('D')['total'].sum()
+    plt.figure(figsize=(10,4))
+    ts.plot()
+    plt.title('Daily Revenue')
+    plt.xlabel('Date')
+    plt.ylabel('Revenue')
+    ts_path = os.path.join(OUTPUTS, 'daily_revenue.png')
+    plt.tight_layout(); plt.savefig(ts_path); plt.close()
+
+    # Quantity distribution
+    plt.figure(figsize=(6,4))
+    sns.histplot(df['quantity'].clip(upper=50), bins=30)
+    plt.title('Quantity Distribution (clipped at 50)')
+    qty_path = os.path.join(OUTPUTS, 'quantity_dist.png')
+    plt.tight_layout(); plt.savefig(qty_path); plt.close()
+
+    # Correlation heatmap for numeric cols
+    num_cols = ['quantity','price','discount','total']
+    corr = df[num_cols].corr()
+    plt.figure(figsize=(6,5))
+    sns.heatmap(corr, annot=True, cmap='coolwarm')
+    corr_path = os.path.join(OUTPUTS, 'correlation_heatmap.png')
+    plt.tight_layout(); plt.savefig(corr_path); plt.close()
+
+    # Simple insights markdown
+    report_lines = []
+    report_lines.append('# EDA Report\n')
+    report_lines.append('## Key summaries\n')
+    report_lines.append(f'- Rows: {len(df)}\n')
+    report_lines.append(f'- Columns: {len(df.columns)}\n')
+    report_lines.append('\n## Missing data\n')
+    for _, r in missing.iterrows():
+        report_lines.append(f"- {r['column']}: {int(r['missing'])} missing ({r['pct']:.1f}%)\n")
+    report_lines.append('\n## Top products by revenue\n')
+    for i, r in top_products.head(10).iterrows():
+        report_lines.append(f"- Product {r['product_id']}: ${r['total']:.2f}\n")
+    report_lines.append('\n## Top customers by spend\n')
+    for i, r in top_customers.head(10).iterrows():
+        report_lines.append(f"- Customer {r['customer_id']}: ${r['total']:.2f}\n")
+    report_lines.append('\n## Saved plots\n')
+    report_lines.append(f'- Daily revenue: {ts_path}\n')
+    report_lines.append(f'- Quantity distribution: {qty_path}\n')
+    report_lines.append(f'- Correlation heatmap: {corr_path}\n')
+
+    report_path = os.path.join(OUTPUTS, 'EDA_report.md')
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.writelines('\n'.join(report_lines))
+
+    print('EDA complete. Outputs in', OUTPUTS)
+
+
+if __name__ == '__main__':
+    main()
