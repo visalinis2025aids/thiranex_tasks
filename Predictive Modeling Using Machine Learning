@@ -1,0 +1,128 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+import joblib
+
+
+RAW_PATH = 'data/raw/sample_transactions.csv'
+CLEAN_PATH = 'data/processed/clean_transactions.csv'
+MODELS_DIR = 'models'
+OUTPUTS_DIR = 'outputs'
+
+os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+
+def load_data():
+    if os.path.exists(CLEAN_PATH):
+        df = pd.read_csv(CLEAN_PATH, parse_dates=['order_date'])
+    else:
+        df = pd.read_csv(RAW_PATH, parse_dates=['order_date'])
+        # basic cleaning fallback if cleaned file doesn't exist
+        df['customer_id'] = df['customer_id'].fillna(-1).astype(int)
+        df['price'] = df['price'].replace(0, np.nan).fillna(df['price'].median())
+        df['total'] = df['quantity'] * df['price'] - df.get('discount', 0)
+        df['is_returned'] = df['returned'] == 1
+    return df
+
+
+def prepare_features(df: pd.DataFrame):
+    df = df.copy()
+    # ensure target
+    if 'is_returned' not in df.columns:
+        df['is_returned'] = df['returned'] == 1
+    # simple feature set
+    df['order_hour'] = pd.to_datetime(df['order_date']).dt.hour
+    numeric_features = ['quantity', 'price', 'discount', 'total', 'order_hour']
+    categorical_features = ['category', 'product_id']
+    # drop rows with missing target
+    df = df.dropna(subset=['is_returned'])
+    X = df[numeric_features + categorical_features]
+    y = df['is_returned'].astype(int)
+    return X, y, numeric_features, categorical_features
+
+
+def build_pipeline(numeric_features, categorical_features):
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ])
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore'))
+    ])
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, numeric_features),
+            ('cat', categorical_transformer, categorical_features)
+        ]
+    )
+    clf = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', RandomForestClassifier(n_estimators=100, random_state=42))])
+    return clf
+
+
+def train_and_evaluate():
+    df = load_data()
+    X, y, num_feats, cat_feats = prepare_features(df)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    model = build_pipeline(num_feats, cat_feats)
+    model.fit(X_train, y_train)
+
+    preds = model.predict(X_test)
+    probs = model.predict_proba(X_test)[:, 1]
+
+    print('\nClassification report:')
+    print(classification_report(y_test, preds))
+
+    cm = confusion_matrix(y_test, preds)
+    print('Confusion matrix:\n', cm)
+
+    # plot confusion matrix
+    fig, ax = plt.subplots(figsize=(4,4))
+    cax = ax.matshow(cm, cmap='Blues')
+    for (i, j), val in np.ndenumerate(cm):
+        ax.text(j, i, str(val), ha='center', va='center')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title('Confusion Matrix')
+    plt.colorbar(cax)
+    cm_path = os.path.join(OUTPUTS_DIR, 'confusion_matrix.png')
+    fig.savefig(cm_path)
+    plt.close(fig)
+    print('Saved confusion matrix to', cm_path)
+
+    # ROC curve
+    try:
+        auc = roc_auc_score(y_test, probs)
+        fpr, tpr, _ = roc_curve(y_test, probs)
+        fig2, ax2 = plt.subplots(figsize=(6,4))
+        ax2.plot(fpr, tpr, label=f'AUC = {auc:.3f}')
+        ax2.plot([0,1], [0,1], '--', color='gray')
+        ax2.set_xlabel('False Positive Rate')
+        ax2.set_ylabel('True Positive Rate')
+        ax2.set_title('ROC Curve')
+        ax2.legend()
+        roc_path = os.path.join(OUTPUTS_DIR, 'roc_curve.png')
+        fig2.savefig(roc_path)
+        plt.close(fig2)
+        print('Saved ROC curve to', roc_path)
+    except Exception as e:
+        print('ROC could not be plotted:', e)
+
+    # save model
+    model_path = os.path.join(MODELS_DIR, 'random_forest_return_pred.pkl')
+    joblib.dump(model, model_path)
+    print('Saved trained model to', model_path)
+
+
+if __name__ == '__main__':
+    train_and_evaluate()
