@@ -1,0 +1,79 @@
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+
+
+def load_raw(path: str) -> pd.DataFrame:
+    return pd.read_csv(path, parse_dates=['order_date'])
+
+
+def summarize_missing(df: pd.DataFrame) -> pd.DataFrame:
+    miss = df.isnull().sum().rename('missing')
+    pct = (df.isnull().mean() * 100).rename('pct')
+    return pd.concat([miss, pct], axis=1).sort_values('missing', ascending=False)
+
+
+def drop_duplicates(df: pd.DataFrame, subset=None) -> pd.DataFrame:
+    return df.drop_duplicates(subset=subset)
+
+
+def impute_missing(df: pd.DataFrame) -> pd.DataFrame:
+    # Simple strategies for demo: fill missing customer_id with -1, price with median
+    df = df.copy()
+    if 'customer_id' in df.columns:
+        df['customer_id'] = df['customer_id'].fillna(-1).astype(int)
+    if 'price' in df.columns:
+        median_price = df['price'].replace(0, np.nan).median()
+        df['price'] = df['price'].fillna(median_price)
+    return df
+
+
+def detect_outliers_iqr(df: pd.DataFrame, col: str) -> pd.Series:
+    q1 = df[col].quantile(0.25)
+    q3 = df[col].quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    return (df[col] < lower) | (df[col] > upper)
+
+
+def cap_outliers(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    df = df.copy()
+    q1 = df[col].quantile(0.25)
+    q3 = df[col].quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    df[col] = np.where(df[col] < lower, lower, df[col])
+    df[col] = np.where(df[col] > upper, upper, df[col])
+    return df
+
+
+def isolation_outliers(df: pd.DataFrame, cols: list) -> pd.Series:
+    iso = IsolationForest(contamination=0.01, random_state=42)
+    mask = iso.fit_predict(df[cols].fillna(0))
+    return mask == -1
+
+
+def feature_engineer(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df['order_hour'] = df['order_date'].dt.hour
+    df['order_day'] = df['order_date'].dt.date
+    df['total'] = df['quantity'] * df['price'] - df['discount']
+    df['is_returned'] = df['returned'] == 1
+    return df
+
+
+def save_clean(df: pd.DataFrame, path: str):
+    df.to_csv(path, index=False)
+
+
+if __name__ == '__main__':
+    df = load_raw('data/raw/sample_transactions.csv')
+    print(summarize_missing(df))
+    df = drop_duplicates(df)
+    df = impute_missing(df)
+    df = feature_engineer(df)
+    df = cap_outliers(df, 'quantity')
+    save_clean(df, 'data/processed/clean_transactions.csv')
+    print('Done. Clean file saved to data/processed/clean_transactions.csv')
